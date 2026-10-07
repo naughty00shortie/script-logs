@@ -50,6 +50,34 @@ describe('script-logs', () => {
       expect(await ui.find({ text: /line two/ })).toBeDefined()
     })
 
+    test(`filters to only ongoing scripts (${surface})`, async ($, on) => {
+      mock.clock(on)
+      on('tool.call', (_$, e) =>
+        e.tool_use_id === 'bg'
+          ? { result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'task-bg' } }
+          : { result: { stdout: 'all done', stderr: '', interrupted: false } },
+      )
+      await $.tool.call({ tool: 'Bash', command: 'echo', description: 'Finished one', tool_use_id: 'fg' })
+      await $.tool.call({ tool: 'Bash', command: 'sleep 99', description: 'Still going', tool_use_id: 'bg', run_in_background: true })
+
+      const ui = await $.ui.mount({
+        plugin: 'script-logs',
+        surface,
+        component: 'Pane',
+        requestId: 'script-logs',
+        props: { title: 'Script logs' } as never,
+      })
+      expect(await ui.find({ text: /Finished one/ })).toBeDefined()
+
+      await ui.press({ key: 'filter' })
+      expect(await ui.find({ text: /Finished one/ })).toBeUndefined()
+      expect(await ui.find({ text: /Still going/ })).toBeDefined()
+      expect(await ui.find({ text: /Show finished \(1\)/ })).toBeDefined()
+
+      await ui.press({ key: 'filter' })
+      expect(await ui.find({ text: /Finished one/ })).toBeDefined()
+    })
+
     test(`shows a Bash call's output in the pane (${surface})`, async ($, on) => {
       mock.clock(on)
       on('tool.call', () => ({

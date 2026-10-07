@@ -11,6 +11,7 @@ const POLL_MS = 1000
 
 const entries = atom({ plugin: 'script-logs', key: 'entries' } as const, [])
 const view = atom({ plugin: 'script-logs', key: 'view' } as const, 'overview')
+const onlyLive = atom({ plugin: 'script-logs', key: 'onlyLive' } as const, false)
 
 type Outcome = {
   stdout?: string
@@ -191,8 +192,8 @@ function toggle($: EngineInterface, id: string) {
   return patch($, id, one => ({ ...one, isCollapsed: !one.isCollapsed }))
 }
 
-function setAllCollapsed($: EngineInterface, isCollapsed: boolean) {
-  return update($, entries, list => list.map(one => ({ ...one, isCollapsed })))
+function setCollapsed($: EngineInterface, ids: string[], isCollapsed: boolean) {
+  return update($, entries, list => list.map(one => (ids.includes(one.id) ? { ...one, isCollapsed } : one)))
 }
 
 // This mod only watches: if its bookkeeping fails, the call goes on untouched.
@@ -301,7 +302,11 @@ export const register: Register = on => {
       </Box>
     )
 
-    const allCollapsed = list.length > 0 && list.every(one => one.isCollapsed)
+    const isFiltered = await read($, onlyLive)
+    const visible = isFiltered ? list.filter(isLive) : list
+    const hidden = list.length - visible.length
+
+    const allCollapsed = visible.length > 0 && visible.every(one => one.isCollapsed)
     const controls = (
       <Box>
         <Button
@@ -312,10 +317,17 @@ export const register: Register = on => {
         />
         <Text> </Text>
         <Button
+          key="filter"
+          hotkey="o"
+          label={isFiltered ? `Show finished (${hidden})` : 'Only ongoing'}
+          onPress={() => update($, onlyLive, isOn => !isOn)}
+        />
+        <Text> </Text>
+        <Button
           key="all"
           hotkey="a"
           label={allCollapsed ? 'Expand all' : 'Collapse all'}
-          onPress={() => setAllCollapsed($, !allCollapsed)}
+          onPress={() => setCollapsed($, visible.map(one => one.id), !allCollapsed)}
         />
         <Text> </Text>
         <Button
@@ -327,11 +339,15 @@ export const register: Register = on => {
       </Box>
     )
 
-    if (list.length === 0) {
+    if (visible.length === 0) {
       return (
         <Box flexDirection="column">
           {controls}
-          <Text dimColor>No scripts yet. Bash, PowerShell and Monitor calls show up here.</Text>
+          <Text dimColor>
+            {list.length === 0
+              ? 'No scripts yet. Bash, PowerShell and Monitor calls show up here.'
+              : `Nothing running. ${hidden} finished hidden: press o to show them.`}
+          </Text>
         </Box>
       )
     }
@@ -354,7 +370,7 @@ export const register: Register = on => {
     // Overview: fill the room newest first; live entries get more lines than finished ones.
     let room = rows - 1
     const shown: { one: LogEntry; want: number }[] = []
-    for (const one of [...list].reverse()) {
+    for (const one of [...visible].reverse()) {
       if (room < 1) break
       const cap = one.isCollapsed ? 0 : isLive(one) ? 12 : 4
       const want = Math.min(one.lines.length, cap, Math.max(0, room - 1))

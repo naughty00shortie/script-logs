@@ -29,7 +29,8 @@ The pane opens at session start when the terminal is at least 144 columns wide; 
 | `/logs` | Open the pane |
 | `/logs-clear` | Remove finished entries |
 | `1`–`9` or click `▾` | Collapse / expand that entry |
-| `a` | Collapse / expand all |
+| `a` | Collapse / expand all shown entries |
+| `o` | Only show ongoing scripts (running or background) / show finished again |
 | `f` | Toggle between all entries and following the newest live one |
 | `c` | Clear finished entries |
 

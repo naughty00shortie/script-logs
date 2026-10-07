@@ -18,6 +18,6 @@ export type LogView = 'overview' | 'follow'
 
 declare module 'claude-code' {
   interface PluginState {
-    'script-logs': { entries: LogEntry[]; view: LogView }
+    'script-logs': { entries: LogEntry[]; view: LogView; onlyLive: boolean }
   }
 }
