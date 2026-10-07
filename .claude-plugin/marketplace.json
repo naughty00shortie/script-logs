@@ -1,11 +1,13 @@
 {
   "name": "script-logs",
-  "owner": { "name": "naughty00shortie" },
+  "owner": {
+    "name": "naughty00shortie"
+  },
   "plugins": [
     {
       "name": "script-logs",
       "source": "./",
-      "description": "A live pane showing the output of the scripts Claude runs (Bash, PowerShell, background tasks) and what it is monitoring"
+      "description": "A live pane for the background shell commands and monitors Claude runs"
     }
   ]
 }

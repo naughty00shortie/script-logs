@@ -1,14 +1,14 @@
 # script-logs
 
-A Claude Code mod that adds a live **Script logs** pane: see the output of the scripts Claude runs and the things it is monitoring, as they happen.
+A Claude Code mod that adds a live **Script logs** pane for the work Claude runs in the background, which the main window doesn't show as it happens.
 
-- **Bash and PowerShell** commands, with their description, status and output
-- **Background commands**, tailed live from their output file
+- **Background shell commands**: started with `run_in_background`, moved there with `ctrl+b`, or backgrounded after a timeout, tailed live from their output file
 - **Monitor** watches, with each event as it arrives
-- Subagents' commands, tagged `(agent)`
-- A status line count: `▶ 1 running · ◆ 2 background`
+- Subagents' background work, tagged `(agent)`
 
-Status icons: `▶` running · `◆` background · `✓` done · `✗` failed · `■` stopped
+Ordinary foreground commands are left out: their output already shows in the main window. The mod writes nothing to the status line.
+
+Status icons: `◆` running in the background · `✓` done · `✗` failed · `■` stopped
 
 ## Install
 
@@ -30,13 +30,13 @@ The pane opens at session start when the terminal is at least 144 columns wide; 
 | `/logs-clear` | Remove finished entries |
 | `1`–`9` or click `▾` | Collapse / expand that entry |
 | `a` | Collapse / expand all shown entries |
-| `o` | Only show ongoing scripts (running or background) / show finished again |
-| `f` | Toggle between all entries and following the newest live one |
+| `o` | Only show ongoing tasks / show finished again |
+| `f` | Toggle between all entries and following the newest ongoing one |
 | `c` | Clear finished entries |
 
 Keys work while the pane has focus (click it, or `ctrl+x tab`).
 
-The mod only watches: if its own bookkeeping fails, your commands still run untouched.
+The mod only watches: if its own bookkeeping fails, Claude's commands still run untouched.
 
 ## Develop
 

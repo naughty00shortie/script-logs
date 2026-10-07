@@ -60,19 +60,8 @@ function patch($: EngineInterface, id: string, fn: (one: LogEntry) => LogEntry) 
   return update($, entries, list => list.map(one => (one.id === id ? fn(one) : one)))
 }
 
-async function refreshStatus($: EngineInterface) {
-  const list = await read($, entries)
-  const running = list.filter(one => one.status === 'running').length
-  const bg = list.filter(one => one.status === 'background').length
-  $.ui.status(
-    running + bg === 0
-      ? undefined
-      : [running && `▶ ${running} running`, bg && `◆ ${bg} background`]
-          .filter(Boolean)
-          .join(' · '),
-  )
-}
-
+// Foreground commands already show in the transcript; only work that went to the
+// background (run_in_background, ctrl+b, a timeout, or a Monitor) gets an entry.
 async function track(
   $: EngineInterface,
   id: string,
@@ -82,47 +71,27 @@ async function track(
   agentId: string | undefined,
   run: () => Promise<ToolCallResult>,
 ) {
+  const startedAt = await $.clock.now()
+  const ran = await run()
+  if (ran.deny !== undefined) return ran
+
+  const out = (ran.result ?? {}) as Outcome
+  const taskId = out.backgroundTaskId ?? (tool === 'Monitor' ? out.taskId : undefined)
+  if (taskId === undefined) return ran
+
   const entry: LogEntry = {
     id,
     tool,
     title,
     command,
-    status: 'running',
-    lines: [],
-    startedAt: await $.clock.now(),
+    status: 'background',
+    lines: clip([...toLines(out.stdout), ...toLines(out.stderr)]),
+    startedAt,
     agentId,
+    taskId,
+    outputPath: outputPathIn(ran.text),
   }
   await update($, entries, list => [...list, entry].slice(-MAX_ENTRIES))
-  await refreshStatus($)
-
-  const ran = await run()
-  const out = (ran.result ?? {}) as Outcome
-  const taskId = out.backgroundTaskId ?? (tool === 'Monitor' ? out.taskId : undefined)
-
-  await patch($, id, one => {
-    if (ran.deny !== undefined) {
-      return { ...one, status: 'stopped', lines: [`denied: ${ran.deny}`] }
-    }
-    if (taskId !== undefined) {
-      return {
-        ...one,
-        status: 'background',
-        taskId,
-        outputPath: outputPathIn(ran.text),
-        lines: clip([...one.lines, ...toLines(out.stdout), ...toLines(out.stderr)]),
-      }
-    }
-    const lines =
-      out.stdout !== undefined || out.stderr !== undefined
-        ? [...toLines(out.stdout), ...toLines(out.stderr)]
-        : toLines(ran.text)
-    return {
-      ...one,
-      status: ran.isError ? 'failed' : out.interrupted ? 'stopped' : 'done',
-      lines: clip(lines.length === 0 ? ['(no output)'] : lines),
-    }
-  })
-  await refreshStatus($)
 
   return ran
 }
@@ -204,6 +173,8 @@ export const register: Register = on => {
     await $.command.register({ name: 'logs', description: 'Open the script logs pane' })
     await $.command.register({ name: 'logs-clear', description: 'Clear the script logs pane' })
     void $.ui.open({ id: PANE, title: TITLE })
+    // Earlier versions wrote a running count to the status line; clear any left over.
+    $.ui.status(undefined)
 
     $.clock.every(POLL_MS, () => void pollOutputs($))
 
@@ -220,7 +191,6 @@ export const register: Register = on => {
     await update($, entries, list =>
       list.filter(one => one.status === 'running' || one.status === 'background'),
     )
-    await refreshStatus($)
 
     return { text: 'Cleared finished scripts from the log pane.' }
   })
@@ -252,7 +222,6 @@ export const register: Register = on => {
       await update($, entries, list =>
         list.map(one => (one.taskId === id ? { ...one, status: 'stopped' } : one)),
       )
-      await refreshStatus($)
     }
 
     return ran
@@ -271,7 +240,6 @@ export const register: Register = on => {
     for (const note of notificationsIn(text)) {
       await applyNotification($, note)
     }
-    await refreshStatus($)
 
     return kept
   }).catch(passThrough)
@@ -345,7 +313,7 @@ export const register: Register = on => {
           {controls}
           <Text dimColor>
             {list.length === 0
-              ? 'No scripts yet. Bash, PowerShell and Monitor calls show up here.'
+              ? 'Nothing in the background yet. Background commands and monitors show up here.'
               : `Nothing running. ${hidden} finished hidden: press o to show them.`}
           </Text>
         </Box>
@@ -362,7 +330,7 @@ export const register: Register = on => {
           {one.lines.slice(-(rows - 3)).map(line => (
             <Text>{line}</Text>
           ))}
-          {one.status === 'running' && one.lines.length === 0 && <Text dimColor>running…</Text>}
+          {isLive(one) && one.lines.length === 0 && <Text dimColor>waiting for output…</Text>}
         </Box>
       )
     }

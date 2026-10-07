@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 
 import { notificationsIn, outputPathIn, toLines } from '../hooks/register'
 
@@ -28,18 +29,70 @@ describe('script-logs', () => {
   })
 
   for (const surface of SURFACES) {
-    test(`collapses and expands an entry (${surface})`, async ($, on) => {
-      mock.clock(on)
-      on('tool.call', () => ({ result: { stdout: 'line one' + String.fromCharCode(10) + 'line two', stderr: '', interrupted: false } }))
-      await $.tool.call({ tool: 'Bash', command: 'echo', description: 'Two lines', tool_use_id: 't2' })
-
-      const ui = await $.ui.mount({
+    const mountPane = ($: Engine) =>
+      $.ui.mount({
         plugin: 'script-logs',
         surface,
         component: 'Pane',
         requestId: 'script-logs',
         props: { title: 'Script logs' } as never,
       })
+
+    // A test engine answer for a command that went to the background.
+    const backgrounded = (taskId: string, stdout = '') => ({
+      result: { stdout, stderr: '', interrupted: false, backgroundTaskId: taskId },
+    })
+
+    test(`skips foreground commands, lists background ones (${surface})`, async ($, on) => {
+      mock.clock(on)
+      on('tool.call', (_$, e) =>
+        e.tool_use_id === 'bg'
+          ? backgrounded('task-bg', 'started in background')
+          : { result: { stdout: 'foreground output', stderr: '', interrupted: false } },
+      )
+      await $.tool.call({ tool: 'Bash', command: 'echo hi', description: 'Quick script', tool_use_id: 'fg' })
+      await $.tool.call({ tool: 'PowerShell', command: 'dir', description: 'Quick listing', tool_use_id: 'ps' })
+      await $.tool.call({ tool: 'Bash', command: 'sleep 99', description: 'Long job', tool_use_id: 'bg', run_in_background: true })
+
+      const ui = await mountPane($)
+      expect(await ui.find({ text: /Quick script/ })).toBeUndefined()
+      expect(await ui.find({ text: /Quick listing/ })).toBeUndefined()
+      expect(await ui.find({ text: /foreground output/ })).toBeUndefined()
+      expect(await ui.find({ text: /Long job/ })).toBeDefined()
+      expect(await ui.find({ text: /started in background/ })).toBeDefined()
+    })
+
+    test(`lists a Monitor (${surface})`, async ($, on) => {
+      mock.clock(on)
+      on('tool.call', () => ({ result: { taskId: 'mon-1', timeoutMs: 60000 } }))
+      await $.tool.call({ tool: 'Monitor', description: 'Watch the deploy', command: 'tail -f x', timeout_ms: 60000, tool_use_id: 'm' })
+
+      const ui = await mountPane($)
+      expect(await ui.find({ text: /Watch the deploy/ })).toBeDefined()
+    })
+
+    test(`writes nothing to the status line (${surface})`, async ($, on) => {
+      mock.clock(on)
+      const statuses: (string | undefined)[] = []
+      on('ui.status', (_$, e) => {
+        statuses.push(e.text)
+        return undefined as never
+      })
+      on('tool.call', (_$, e) =>
+        e.tool_use_id === 'bg' ? backgrounded('task-bg') : { result: { stdout: 'x', stderr: '', interrupted: false } },
+      )
+      await $.tool.call({ tool: 'Bash', command: 'echo', description: 'Quick', tool_use_id: 'fg' })
+      await $.tool.call({ tool: 'Bash', command: 'sleep 9', description: 'Slow', tool_use_id: 'bg', run_in_background: true })
+
+      expect(statuses.filter(text => text !== undefined)).toEqual([])
+    })
+
+    test(`collapses and expands an entry (${surface})`, async ($, on) => {
+      mock.clock(on)
+      on('tool.call', () => backgrounded('task-2', 'line one' + String.fromCharCode(10) + 'line two'))
+      await $.tool.call({ tool: 'Bash', command: 'echo', description: 'Two lines', tool_use_id: 't2', run_in_background: true })
+
+      const ui = await mountPane($)
       expect(await ui.find({ text: /line two/ })).toBeDefined()
 
       await ui.press({ key: 'toggle-t2' })
@@ -50,51 +103,28 @@ describe('script-logs', () => {
       expect(await ui.find({ text: /line two/ })).toBeDefined()
     })
 
-    test(`filters to only ongoing scripts (${surface})`, async ($, on) => {
+    test(`filters to only ongoing tasks (${surface})`, async ($, on) => {
       mock.clock(on)
       on('tool.call', (_$, e) =>
-        e.tool_use_id === 'bg'
-          ? { result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'task-bg' } }
-          : { result: { stdout: 'all done', stderr: '', interrupted: false } },
+        e.tool === 'TaskStop'
+          ? { result: { message: 'stopped' } }
+          : backgrounded(e.tool_use_id === 'done' ? 'task-done' : 'task-live'),
       )
-      await $.tool.call({ tool: 'Bash', command: 'echo', description: 'Finished one', tool_use_id: 'fg' })
-      await $.tool.call({ tool: 'Bash', command: 'sleep 99', description: 'Still going', tool_use_id: 'bg', run_in_background: true })
+      await $.tool.call({ tool: 'Bash', command: 'make', description: 'Finished build', tool_use_id: 'done', run_in_background: true })
+      await $.tool.call({ tool: 'Bash', command: 'sleep 99', description: 'Still going', tool_use_id: 'live', run_in_background: true })
+      // The first task ends.
+      await $.tool.call({ tool: 'TaskStop', task_id: 'task-done', tool_use_id: 'stop' })
 
-      const ui = await $.ui.mount({
-        plugin: 'script-logs',
-        surface,
-        component: 'Pane',
-        requestId: 'script-logs',
-        props: { title: 'Script logs' } as never,
-      })
-      expect(await ui.find({ text: /Finished one/ })).toBeDefined()
+      const ui = await mountPane($)
+      expect(await ui.find({ text: /Finished build/ })).toBeDefined()
 
       await ui.press({ key: 'filter' })
-      expect(await ui.find({ text: /Finished one/ })).toBeUndefined()
+      expect(await ui.find({ text: /Finished build/ })).toBeUndefined()
       expect(await ui.find({ text: /Still going/ })).toBeDefined()
       expect(await ui.find({ text: /Show finished \(1\)/ })).toBeDefined()
 
       await ui.press({ key: 'filter' })
-      expect(await ui.find({ text: /Finished one/ })).toBeDefined()
-    })
-
-    test(`shows a Bash call's output in the pane (${surface})`, async ($, on) => {
-      mock.clock(on)
-      on('tool.call', () => ({
-        result: { stdout: 'hello from the script', stderr: '', interrupted: false },
-      }))
-
-      await $.tool.call({ tool: 'Bash', command: 'echo hi', description: 'Say hello', tool_use_id: 't1' })
-
-      const ui = await $.ui.mount({
-        plugin: 'script-logs',
-        surface,
-        component: 'Pane',
-        requestId: 'script-logs',
-        props: { title: 'Script logs' } as never,
-      })
-      expect(await ui.find({ text: /hello from the script/ })).toBeDefined()
-      expect(await ui.find({ text: /Say hello/ })).toBeDefined()
+      expect(await ui.find({ text: /Finished build/ })).toBeDefined()
     })
   }
 })
