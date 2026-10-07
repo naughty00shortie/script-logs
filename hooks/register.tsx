@@ -12,6 +12,8 @@ const POLL_MS = 1000
 const entries = atom({ plugin: 'script-logs', key: 'entries' } as const, [])
 const view = atom({ plugin: 'script-logs', key: 'view' } as const, 'overview')
 const onlyLive = atom({ plugin: 'script-logs', key: 'onlyLive' } as const, false)
+// The time the pane last ticked, so running durations count up.
+const now = atom({ plugin: 'script-logs', key: 'now' } as const, 0)
 
 type Outcome = {
   stdout?: string
@@ -32,6 +34,26 @@ export const toLines = (text: string | undefined): string[] =>
     .filter((line, i, all) => line !== '' || i < all.length - 1)
 
 const clip = (lines: string[]) => lines.slice(-MAX_LINES)
+
+const EXITED = /^\[exited with code (-?\d+)\]$/
+
+// A finished task's output file ends with "[exited with code N]": take the code out of the lines.
+export const splitExit = (lines: string[]): { lines: string[]; exitCode?: number } => {
+  const end = lines.findLastIndex(line => line.trim() !== '')
+  const code = end >= 0 ? lines[end]!.trim().match(EXITED)?.[1] : undefined
+  if (code === undefined) return { lines }
+  const kept = lines.slice(0, end)
+  while (kept.length > 0 && kept[kept.length - 1]!.trim() === '') kept.pop()
+  return { lines: kept, exitCode: Number(code) }
+}
+
+export const formatDuration = (ms: number) => {
+  const total = Math.max(0, Math.round(ms / 1000))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const sec = total % 60
+  return h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${sec}s` : `${sec}s`
+}
 
 // The model is told where a background task writes its output; take the path from that text.
 export const outputPathIn = (text: string | undefined) =>
@@ -104,17 +126,49 @@ async function readOutput($: EngineInterface, one: LogEntry) {
     if (seen.get(one.id) === size) return
     seen.set(one.id, size)
     const text = await $.fs.read(one.outputPath)
-    await patch($, one.id, it => ({ ...it, lines: clip(toLines(text)) }))
+    const { lines, exitCode } = splitExit(toLines(text))
+    await patch($, one.id, it => ({ ...it, lines: clip(lines), exitCode: exitCode ?? it.exitCode }))
   } catch {
     // Gone or too large to read: keep what we have.
   }
 }
 
-// Tail the output files of background commands and monitors.
+// Tail the output files of background commands and monitors, and tick running durations.
 async function pollOutputs($: EngineInterface) {
-  for (const one of await read($, entries)) {
+  const list = await read($, entries)
+  for (const one of list) {
     if (one.status === 'background') await readOutput($, one)
   }
+  if (list.some(isLive)) {
+    const at = await $.clock.now()
+    await update($, now, () => at)
+  }
+}
+
+function isLive(one: LogEntry) {
+  return one.status === 'running' || one.status === 'background'
+}
+
+async function markEnded($: EngineInterface, taskId: string, status: LogStatus) {
+  const at = await $.clock.now()
+  await update($, entries, list =>
+    list.map(one => (one.taskId === taskId && isLive(one) ? { ...one, status, endedAt: at } : one)),
+  )
+}
+
+// Stops a background task the way Claude would, through TaskStop, at the person's press.
+async function stopTask($: EngineInterface, one: LogEntry) {
+  if (one.taskId === undefined || !isLive(one)) return
+  const ran = await $.tool.call({
+    tool: 'TaskStop',
+    task_id: one.taskId,
+    consent: `The user pressed "Stop" on "${one.title}" in the Script logs pane`,
+  })
+  if (ran.deny !== undefined || ran.isError) {
+    $.ui.toast(`Could not stop "${one.title}": ${ran.deny ?? ran.text ?? 'TaskStop failed'}`)
+    return
+  }
+  await markEnded($, one.taskId, 'stopped')
 }
 
 export type Notification = {
@@ -138,6 +192,7 @@ export const notificationsIn = (text: string): Notification[] =>
 const ENDED: Record<string, LogStatus> = { completed: 'done', failed: 'failed', killed: 'stopped', stopped: 'stopped' }
 
 async function applyNotification($: EngineInterface, note: Notification) {
+  const at = await $.clock.now()
   await update($, entries, list =>
     list.map(one => {
       if (one.taskId !== note.taskId) return one
@@ -147,7 +202,8 @@ async function applyNotification($: EngineInterface, note: Notification) {
           ? clip([...one.lines, ...toLines(note.event)])
           : one.lines
       const status = (note.status && ENDED[note.status]) || one.status
-      return { ...one, lines, status, outputPath: one.outputPath ?? note.outputPath }
+      const endedAt = isLive(one) && !isLive({ ...one, status }) ? at : one.endedAt
+      return { ...one, lines, status, endedAt, outputPath: one.outputPath ?? note.outputPath }
     }),
   )
   // Pick up the last lines the task wrote before it ended.
@@ -188,9 +244,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'logs-clear' }, async $ => {
-    await update($, entries, list =>
-      list.filter(one => one.status === 'running' || one.status === 'background'),
-    )
+    await update($, entries, list => list.filter(isLive))
 
     return { text: 'Cleared finished scripts from the log pane.' }
   })
@@ -219,9 +273,7 @@ export const register: Register = on => {
     const ran = await next(e)
     const id = e.task_id ?? e.shell_id
     if (id !== undefined && ran.deny === undefined && !ran.isError) {
-      await update($, entries, list =>
-        list.map(one => (one.taskId === id ? { ...one, status: 'stopped' } : one)),
-      )
+      await markEnded($, id, 'stopped')
     }
 
     return ran
@@ -249,7 +301,21 @@ export const register: Register = on => {
     const list = await read($, entries)
     const mode: LogView = await read($, view)
     const rows = Math.max(4, (e.viewport?.rows ?? 30) - 4)
-    const isLive = (one: LogEntry) => one.status === 'running' || one.status === 'background'
+    const at = (await read($, now)) || (await $.clock.now())
+
+    // "· 1m 12s" while running, "· took 24s" once ended, then the exit code when it is not 0.
+    const meta = (one: LogEntry) => {
+      const parts = [
+        isLive(one)
+          ? formatDuration(at - one.startedAt)
+          : one.endedAt !== undefined
+            ? `took ${formatDuration(one.endedAt - one.startedAt)}`
+            : undefined,
+        one.exitCode !== undefined && one.exitCode !== 0 ? `exit ${one.exitCode}` : undefined,
+        one.isCollapsed && one.lines.length > 0 ? `${one.lines.length} lines` : undefined,
+      ].filter(Boolean)
+      return parts.length > 0 ? ` · ${parts.join(' · ')}` : ''
+    }
 
     // hotkey: 1-9 for the entries drawn top to bottom; the toggle collapses or expands one.
     const header = (one: LogEntry, hotkey?: string) => (
@@ -266,7 +332,10 @@ export const register: Register = on => {
           {one.tool}
           {one.agentId ? ' (agent)' : ''}: {one.title}
         </Text>
-        {one.isCollapsed && one.lines.length > 0 && <Text dimColor> ({one.lines.length} lines)</Text>}
+        <Text dimColor>{meta(one)} </Text>
+        {isLive(one) && one.taskId !== undefined && (
+          <Button key={`stop-${one.id}`} plain dimColor label="[stop]" onPress={() => stopTask($, one)} />
+        )}
       </Box>
     )
 

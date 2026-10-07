@@ -10,6 +10,8 @@ Ordinary foreground commands are left out: their output already shows in the mai
 
 Status icons: `◆` running in the background · `✓` done · `✗` failed · `■` stopped
 
+Each entry's header shows how long it has run (`· 1m 12s`), then how long it took once it ends (`· took 24s`), and the exit code when it is not 0 (`· exit 1`). A running entry has a `[stop]` button that stops the task through Claude Code's own TaskStop.
+
 ## Install
 
 At the prompt of a Claude Code terminal session:
@@ -33,6 +35,7 @@ The pane opens at session start when the terminal is at least 144 columns wide; 
 | `o` | Only show ongoing tasks / show finished again |
 | `f` | Toggle between all entries and following the newest ongoing one |
 | `c` | Clear finished entries |
+| click `[stop]` | Stop that background task |
 
 Keys work while the pane has focus (click it, or `ctrl+x tab`).
 

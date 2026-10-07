@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { notificationsIn, outputPathIn, toLines } from '../hooks/register'
+import { formatDuration, notificationsIn, outputPathIn, splitExit, toLines } from '../hooks/register'
 
 const SURFACES = ['terminal', 'desktop'] as const
 
@@ -15,6 +15,17 @@ describe('script-logs', () => {
     const path = 'C:/Temp/claude/x/tasks/b6f.output'
     expect(outputPathIn(`Running in background. Output is being written to: ${path}`)).toBe(path)
     expect(outputPathIn('no file here')).toBeUndefined()
+  })
+
+  test('takes the exit code out of the output', () => {
+    expect(splitExit(['step 1', 'done', '', '[exited with code 1]', ''])).toEqual({ lines: ['step 1', 'done'], exitCode: 1 })
+    expect(splitExit(['still going'])).toEqual({ lines: ['still going'] })
+  })
+
+  test('formats durations', () => {
+    expect(formatDuration(4_000)).toBe('4s')
+    expect(formatDuration(72_000)).toBe('1m 12s')
+    expect(formatDuration(3_720_000)).toBe('1h 2m')
   })
 
   test('reads monitor events and final status from notifications', () => {
@@ -101,6 +112,38 @@ describe('script-logs', () => {
 
       await ui.press({ key: 'toggle-t2' })
       expect(await ui.find({ text: /line two/ })).toBeDefined()
+    })
+
+    test(`shows how long a task has run, then how long it took (${surface})`, async ($, on) => {
+      const clock = mock.clock(on, { now: 1_000_000 })
+      on('tool.call', (_$, e) => (e.tool === 'TaskStop' ? { result: { message: 'stopped' } } : backgrounded('task-t')))
+      await $.tool.call({ tool: 'Bash', command: 'sleep 99', description: 'Timed job', tool_use_id: 'timed', run_in_background: true })
+
+      await clock.advance(72_000)
+      const ui = await mountPane($)
+      expect(await ui.find({ text: /1m 12s/ })).toBeDefined()
+
+      await $.tool.call({ tool: 'TaskStop', task_id: 'task-t', tool_use_id: 'stop-t' })
+      expect(await ui.find({ text: /took 1m 12s/ })).toBeDefined()
+    })
+
+    test(`stops a task from the pane (${surface})`, async ($, on) => {
+      mock.clock(on)
+      const stopped: string[] = []
+      on('tool.call', (_$, e) => {
+        if (e.tool === 'TaskStop') {
+          stopped.push(e.task_id ?? '')
+          return { result: { message: 'stopped', task_id: e.task_id ?? '', task_type: 'local_bash' } }
+        }
+        return backgrounded('task-s')
+      })
+      await $.tool.call({ tool: 'Bash', command: 'sleep 99', description: 'Runaway', tool_use_id: 'run', run_in_background: true })
+
+      const ui = await mountPane($)
+      await ui.press({ key: 'stop-run' })
+      expect(stopped).toEqual(['task-s'])
+      expect(await ui.find({ key: 'stop-run' })).toBeUndefined()
+      expect(await ui.find({ text: /■/ })).toBeDefined()
     })
 
     test(`filters to only ongoing tasks (${surface})`, async ($, on) => {

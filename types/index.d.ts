@@ -12,12 +12,14 @@ export type LogEntry = {
   taskId?: string
   outputPath?: string
   isCollapsed?: boolean
+  endedAt?: number
+  exitCode?: number
 }
 
 export type LogView = 'overview' | 'follow'
 
 declare module 'claude-code' {
   interface PluginState {
-    'script-logs': { entries: LogEntry[]; view: LogView; onlyLive: boolean }
+    'script-logs': { entries: LogEntry[]; view: LogView; onlyLive: boolean; now: number }
   }
 }
