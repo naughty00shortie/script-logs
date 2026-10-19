@@ -24,7 +24,7 @@ Answer `y` to add the marketplace, then pick a scope (user scope loads it in eve
 
 ## Use
 
-The pane opens at session start when the terminal is at least 144 columns wide; otherwise run `/logs`.
+The pane stays closed until you run `/logs`. Background work is still tracked while it is closed, so `/logs` shows everything from the session.
 
 | Key / command | Does |
 | --- | --- |

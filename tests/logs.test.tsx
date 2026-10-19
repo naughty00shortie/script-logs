@@ -39,6 +39,23 @@ describe('script-logs', () => {
     ])
   })
 
+  test('keeps the pane closed at session start; /logs opens it', async ($, on) => {
+    mock.clock(on)
+    on('session.start', (_$, e) => ({ cwd: e.cwd }))
+    on('command.register', (_$, e) => ({ value: { command: e.name } }))
+    const opened: string[] = []
+    on('ui.open', (_$, e) => {
+      opened.push(e.id)
+      return { value: { isPlaced: true } }
+    })
+
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    expect(opened).toEqual([])
+
+    await $.command.run({ command: 'logs', args: '' })
+    expect(opened).toEqual(['script-logs'])
+  })
+
   for (const surface of SURFACES) {
     const mountPane = ($: Engine) =>
       $.ui.mount({

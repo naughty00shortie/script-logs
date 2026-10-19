@@ -228,7 +228,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'logs', description: 'Open the script logs pane' })
     await $.command.register({ name: 'logs-clear', description: 'Clear the script logs pane' })
-    void $.ui.open({ id: PANE, title: TITLE })
+    // The pane stays closed until /logs opens it; entries are still tracked meanwhile.
     // Earlier versions wrote a running count to the status line; clear any left over.
     $.ui.status(undefined)
 
